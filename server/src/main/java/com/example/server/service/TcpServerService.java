@@ -34,7 +34,7 @@ public class TcpServerService {
             logger.info("TCP服务器启动，监听端口: {}", port);
             
             serverThread = new Thread(this::acceptConnections);
-            serverThread.setDaemon(true);
+            serverThread.setDaemon(false);
             serverThread.start();
         } catch (IOException e) {
             logger.error("无法启动TCP服务器", e);
