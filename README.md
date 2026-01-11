@@ -1,82 +1,39 @@
-# TCP/IP 结构体发送客户端程序
+# C/Java 结构体数据传输测试项目
 
-这是一个模拟嵌入式设备的C程序，使用TCP/IP协议向 localhost:10000 发送结构体数据。
+本项目演示了C客户端通过TCP/IP协议向Java Spring Boot后端发送二进制结构体数据，以及后端如何接收和解析这些数据。
 
-**本程序为 Linux 版本**
+![C-java-struct-trans-test/image/result.png at main · Bainianzzz/C-java-struct-trans-test](https://github.com/Bainianzzz/C-java-struct-trans-test/blob/main/image/result.png)
 
-## 编译方法
+## 项目概述
 
-### 使用 GCC 编译
+- **客户端**：C语言编写的TCP客户端，模拟嵌入式设备发送16字节的结构体数据
+- **服务端**：Spring Boot Java应用，接收并解析客户端发送的二进制数据
 
-在 Linux 终端中执行：
+## 关键技术点
 
-```bash
-gcc -Wall -std=c99 -o client client.c
-```
+### 1. 字节序处理
 
-**参数说明：**
-- `-Wall`：显示所有警告
-- `-std=c99`：使用 C99 标准
-- `-o client`：指定输出文件名
-- `client.c`：源文件
+- C客户端发送小端序数据
+- Java使用`ByteOrder.LITTLE_ENDIAN`正确解析
 
-### 编译示例
+### 2. 数据完整性
 
-```bash
-cd /path/to/project
-gcc -Wall -std=c99 -o client client.c
-```
+- 循环读取确保16字节数据完整接收
+- 处理TCP流可能的分段传输
 
-编译成功后，会生成可执行文件 `client`。
+### 3. 并发处理
 
-## 运行方法
+- 每个客户端连接使用独立线程处理
+- 支持多客户端同时连接
 
-### 前提条件
+### 4. 资源管理
 
-在运行客户端之前，需要有一个服务器程序监听 `localhost:10000` 端口。如果没有服务器，客户端会连接失败。
+- 使用try-with-resources自动关闭资源
+- `@PreDestroy`确保服务器正确关闭
 
-可以使用以下方法测试服务器：
+## 数据结构
 
-**方法1：使用 netcat (nc)**
-
-在一个终端中启动服务器：
-
-```bash
-nc -l -p 10000
-```
-
-在另一个终端运行客户端。
-
-**方法2：使用 Python 简单服务器**
-
-```bash
-python3 -c "import socket; s=socket.socket(); s.bind(('0.0.0.0', 10000)); s.listen(1); conn, addr=s.accept(); data=conn.recv(1024); print('收到数据:', data.hex()); conn.close()"
-```
-
-### 运行
-
-编译成功后，直接运行：
-
-```bash
-./client
-```
-
-或者：
-
-```bash
-chmod +x client
-./client
-```
-
-## 程序功能
-
-程序会：
-1. 创建 TCP socket
-2. 连接到 localhost:10000
-3. 发送一个16字节的结构体数据（使用1字节对齐）
-4. 关闭连接
-
-## 结构体定义
+客户端和服务端使用相同的数据结构（1字节对齐，总共16字节）：
 
 ```c
 #pragma pack(1)
@@ -91,45 +48,162 @@ typedef struct {
 #pragma pack()
 ```
 
-结构体总大小：16字节
+## 后端数据接收与处理流程
+
+### 1. TCP服务器启动
+
+Spring Boot应用启动时，`TcpServerService`服务类通过`@PostConstruct`注解自动初始化：
+
+- 创建`ServerSocket`监听指定端口（默认10000）
+- 启动独立的非守护线程持续监听客户端连接
+- 支持多客户端并发连接，每个连接在独立线程中处理
+
+### 2. 客户端连接处理
+
+当客户端连接时，服务器执行以下流程：
+
+```
+客户端连接 → accept() → 创建处理线程 → handleClient()
+```
+
+### 3. 数据接收
+
+在`handleClient()`方法中：
+
+1. **创建输入流**：使用`DataInputStream`包装socket的输入流
+2. **读取16字节数据**：
+   - 创建16字节的缓冲区
+   - 循环读取确保读取完整数据（TCP流可能分段传输）
+   - 检查读取是否完整，如果连接提前关闭则记录警告
+
+```java
+byte[] buffer = new byte[16];
+int bytesRead = 0;
+while (bytesRead < 16) {
+    int n = inputStream.read(buffer, bytesRead, 16 - bytesRead);
+    if (n == -1) {
+        // 连接关闭
+        return;
+    }
+    bytesRead += n;
+}
+```
+
+### 4. 数据解析
+
+使用`ByteBuffer`解析二进制数据，**关键点：字节序处理**
+
+- C客户端使用**小端序（Little Endian）**发送数据
+- Java默认使用**大端序（Big Endian）**
+- 必须设置`ByteOrder.LITTLE_ENDIAN`才能正确解析
+
+```java
+ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+byte deviceId = buffer.get();           // 读取1字节
+short sequenceNum = buffer.getShort();  // 读取2字节
+int timestamp = buffer.getInt();        // 读取4字节
+float temperature = buffer.getFloat();  // 读取4字节
+float humidity = buffer.getFloat();     // 读取4字节
+byte status = buffer.get();             // 读取1字节
+```
+
+**数据类型映射**：
+- C `uint8_t` → Java `byte`（使用`& 0xFF`转换为无符号显示）
+- C `uint16_t` → Java `short`（使用`& 0xFFFF`转换为无符号显示）
+- C `uint32_t` → Java `int`
+- C `float` → Java `float`
+
+### 5. 数据输出
+
+解析后的数据通过SLF4J日志框架输出，包含：
+- 各字段的详细值（设备ID、序列号、时间戳等）
+- 原始二进制数据的十六进制表示
+- 完整的对象toString()输出
+
+### 6. 连接关闭
+
+处理完成后：
+- 关闭客户端socket连接
+- 记录连接关闭日志
+- 线程结束，释放资源
+
+## 环境要求
+
+- **JDK 17** 或更高版本
+- **Maven 3.6** 或更高版本
+- **GCC编译器**（用于编译C客户端）
+
+## 启动流程
+
+### 1. 编译服务端
+
+```bash
+cd server
+mvn clean package
+```
+
+这会生成可执行的jar文件：`target/tcp-server-1.0.0.jar`
+
+### 2. 启动服务端
+
+```bash
+java -jar target/tcp-server-1.0.0.jar
+```
+
+### 3. 编译客户端
+
+```bash
+cd client
+gcc -Wall -std=c99 -o client client.c
+```
+
+### 4. 运行客户端
+
+```bash
+./client
+```
+
+### 5. 查看服务端日志
+
+客户端连接并发送数据后，服务端日志会显示：
+
+```
+========================================
+收到设备数据:
+  设备ID: 0x01 (1)
+  序列号: 1234
+  时间戳: 1234567890
+  温度: 25.50°C
+  湿度: 60.00%
+  状态: 0xAA (170)
+  原始数据 (十六进制): 01 D2 04 00 00 49 96 D4 00 00 CC 41 00 00 70 42 AA
+完整对象: DeviceData{deviceId=0x01, sequenceNum=1234, timestamp=1234567890, temperature=25.50°C, humidity=60.00%, status=0xAA}
+========================================
+```
 
 ## 常见问题
 
-1. **编译错误：找不到头文件**
-   - 确保系统已安装标准C库和开发工具
-   - Ubuntu/Debian：`sudo apt-get install build-essential`
-   - CentOS/RHEL：`sudo yum groupinstall "Development Tools"`
+1. **服务端立即退出**
+   - 确保服务器线程不是守护线程（daemon = false）
+   - 检查`TcpServerService.java`中的线程设置
 
-2. **连接失败：Connection refused**
-   - 确保有服务器程序在监听 10000 端口
-   - 检查端口是否被占用：`netstat -tuln | grep 10000` 或 `ss -tuln | grep 10000`
-   - 可以使用 netcat 测试：`nc -l -p 10000`
+2. **数据解析错误**
+   - 确认使用`ByteOrder.LITTLE_ENDIAN`
+   - 检查字节数组长度是否为16字节
 
-3. **权限被拒绝 (Permission denied)**
-   - 确保可执行文件有执行权限：`chmod +x client`
-   - 或者使用：`bash client`（不推荐）
+3. **端口被占用**
+   - 检查端口：`netstat -tuln | grep 10000`
+   - 修改`application.properties`中的端口配置
 
-4. **找不到 gcc 命令**
-   - 安装 gcc：`sudo apt-get install gcc`（Ubuntu/Debian）
-   - 或：`sudo yum install gcc`（CentOS/RHEL）
+4. **连接失败**
+   - 确保服务端已启动
+   - 检查防火墙设置
+   - 验证IP地址和端口号
 
-## 测试服务器示例
+## 扩展建议
 
-可以使用以下 Python 脚本作为测试服务器：
-
-```python
-#!/usr/bin/env python3
-import socket
-
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.bind(('0.0.0.0', 10000))
-s.listen(1)
-print("服务器监听 10000 端口...")
-conn, addr = s.accept()
-print(f"客户端连接: {addr}")
-data = conn.recv(1024)
-print(f"收到 {len(data)} 字节数据")
-print(f"十六进制: {data.hex()}")
-conn.close()
-s.close()
-```
+- 添加数据持久化（数据库存储）
+- 实现数据验证和异常处理
+- 添加HTTP API查询接收的数据
+- 实现数据统计和分析功能
+- 添加数据加密和认证机制
